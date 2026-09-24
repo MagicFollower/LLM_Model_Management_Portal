@@ -47,7 +47,7 @@ class SearchRequest(BaseModel):
     """检索请求"""
     query: str
     topK: int = Field(..., ge=1, le=20)
-    minScore: float = Field(..., ge=-1.0, le=1.0)
+    minScore: float = Field(..., ge=0.0, le=100.0)
     chunks: List[ChunkInput]
     enableBm25: Optional[bool] = False
     enableRerank: Optional[bool] = False

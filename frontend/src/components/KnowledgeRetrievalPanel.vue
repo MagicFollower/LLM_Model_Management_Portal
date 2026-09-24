@@ -35,7 +35,7 @@ export default defineComponent({
       pollTimer: null as ReturnType<typeof setInterval> | null,
       query: '',
       topK: 5,
-      minScore: 0.3,
+      minScore: 30,
       enableBm25: false,
       enableRerank: false,
       searching: false,
@@ -93,18 +93,18 @@ export default defineComponent({
           return '模型未加载'
       }
     },
-    /** 根据启用的检索模式返回分数范围配置 */
+    /** 根据启用的检索模式返回分数范围配置（统一 [0, 100]，精确到小数点后2位） */
     minScoreConfig(): { min: number; max: number; step: number; hint: string; default: number } {
       if (this.enableRerank) {
-        // Reranker 归一化分数 [0, 1]（优先级最高，因为最终分数来自 Reranker）
-        return { min: 0, max: 1, step: 0.05, default: 0.3, hint: 'Reranker 归一化分数 ∈ [0, 1]' }
+        // Reranker 归一化分数 [0, 100]（优先级最高，因为最终分数来自 Reranker）
+        return { min: 0, max: 100, step: 0.01, default: 30, hint: 'Reranker 归一化分数 ∈ [0, 100]' }
       }
       if (this.enableBm25) {
-        // RRF 融合分数范围 (0, 0.02]，minScore 不适用
-        return { min: 0, max: 0.05, step: 0.001, default: 0, hint: 'RRF 融合模式：分数为排名加权，已自动按 topK 截断，无需阈值' }
+        // RRF 融合分数 [0, 100]，minScore 不适用
+        return { min: 0, max: 100, step: 0.01, default: 0, hint: 'RRF 融合模式：分数为排名加权，已自动按 topK 截断，无需阈值' }
       }
-      // 纯向量检索：余弦相似度 [-1, 1]
-      return { min: -1, max: 1, step: 0.05, default: 0.3, hint: '向量余弦相似度 ∈ [-1, 1]' }
+      // 纯向量检索：余弦相似度归一化到 [0, 100]
+      return { min: 0, max: 100, step: 0.01, default: 30, hint: '向量相似度归一化分数 ∈ [0, 100]' }
     },
   },
   watch: {
@@ -203,9 +203,9 @@ export default defineComponent({
       this.searching = false
     },
     severityForScore(score: number): 'success' | 'info' | 'warn' | 'danger' {
-      if (score >= 0.7) return 'success'
-      if (score >= 0.5) return 'info'
-      if (score >= 0.3) return 'warn'
+      if (score >= 70) return 'success'
+      if (score >= 50) return 'info'
+      if (score >= 30) return 'warn'
       return 'danger'
     },
     _syncMinScore() {
@@ -325,7 +325,7 @@ export default defineComponent({
             :max="minScoreConfig.max"
             :step="minScoreConfig.step"
             :max-fraction-digits="minScoreConfig.step < 0.01 ? 3 : 2"
-            :disabled="enableBm25"
+            :disabled="enableBm25 && !enableRerank"
             fluid
           />
           <span class="muted param-hint">{{ minScoreConfig.hint }}</span>
@@ -387,7 +387,7 @@ export default defineComponent({
           <div class="hit-header">
             <Tag :value="`#${rank + 1}`" severity="secondary" />
             <span class="hit-document">{{ hit.documentName }}</span>
-            <Tag :value="hit.score.toFixed(4)" :severity="severityForScore(hit.score)" />
+            <Tag :value="`${hit.score.toFixed(2)} 分`" :severity="severityForScore(hit.score)" />
           </div>
           <div class="hit-meta muted">
             <span>{{ hit.section }}</span>

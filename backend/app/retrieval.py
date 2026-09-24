@@ -16,6 +16,33 @@ from .schemas import SearchRequest, SearchHit, SearchResponseData
 logger = logging.getLogger(__name__)
 
 
+def _normalize_score(score: float, score_type: str, max_score: float = 1.0) -> float:
+    """
+    将分数归一化到 [0, 100]
+    
+    Args:
+        score: 原始分数
+        score_type: 分数类型 ('vector', 'bm25', 'rrf', 'rerank')
+        max_score: 该类型分数的理论最大值（用于归一化）
+    
+    Returns:
+        归一化后的分数 ∈ [0, 100]
+    """
+    if score_type == 'vector':
+        # 余弦相似度 [-1, 1] → 截断负值 → [0, 1] → * 100
+        return max(0.0, min(1.0, score)) * 100.0
+    elif score_type == 'rerank':
+        # Reranker 归一化分数 [0, 1] → * 100
+        return max(0.0, min(1.0, score)) * 100.0
+    elif score_type in ('bm25', 'rrf'):
+        # BM25/RRF 分数无上界或范围不定，按批次最大值归一化
+        if max_score <= 0:
+            return 0.0
+        return max(0.0, (score / max_score) * 100.0)
+    else:
+        return score
+
+
 class LRUCache:
     """LRU 缓存"""
 
@@ -91,51 +118,56 @@ class RetrievalService:
         if not chunks:
             return [], False
 
-        # 1. 向量检索（始终执行）
-        vector_hits = await self._vector_search(request.query, chunks)
+        # 1. 向量检索（始终执行）→ 归一化到 [0, 100]
+        vector_hits_raw = await self._vector_search(request.query, chunks)
+        vector_hits = [(cid, _normalize_score(s, 'vector')) for cid, s in vector_hits_raw]
 
-        # 2. BM25 检索（可选）
+        # 2. BM25 检索（可选）→ 归一化到 [0, 100]
         bm25_hits: List[Tuple[str, float]] = []
         if request.enableBm25 and config.BM25_ENABLED:
-            bm25_hits = self._bm25_search(request.query, chunks)
+            bm25_hits_raw = self._bm25_search(request.query, chunks)
+            bm25_max = max((s for _, s in bm25_hits_raw), default=1.0)
+            bm25_hits = [(cid, _normalize_score(s, 'bm25', bm25_max)) for cid, s in bm25_hits_raw]
 
-        # 3. RRF 融合
+        # 3. RRF 融合 → 归一化到 [0, 100]
         used_rrf = False
         if bm25_hits:
-            fused = self._rrf_fusion(vector_hits, bm25_hits)
+            fused_raw = self._rrf_fusion(vector_hits_raw, bm25_hits_raw)
+            rrf_max = max((s for _, s in fused_raw), default=1.0)
+            fused = [(cid, _normalize_score(s, 'rrf', rrf_max)) for cid, s in fused_raw]
             used_rrf = True
         else:
             fused = vector_hits
 
-        # 4. Rerank（可选）
+        # 4. Rerank（可选）→ 归一化到 [0, 100]
         reranker_used = False
         if request.enableRerank and config.RERANKER_ENABLED:
             try:
-                fused, reranker_used = await self._rerank(request.query, fused, chunks)
+                fused_raw, reranker_used = await self._rerank(request.query, fused, chunks)
+                if reranker_used:
+                    fused = [(cid, _normalize_score(s, 'rerank')) for cid, s in fused_raw]
             except Exception:
                 logger.warning("Rerank 失败，使用混合检索分数")
 
-        # 5. 过滤 + 排序 + topK
-        # RRF 融合后分数范围改变（~0.01），不再适用 minScore 阈值
-        if used_rrf:
-            filtered = fused  # RRF 已是排序，直接取 topK
-        else:
-            filtered = [(cid, score) for cid, score in fused if score >= request.minScore]
+        # 5. 过滤 + 排序 + topK（所有分数已在 [0, 100]）
+        # 使用 epsilon 容差确保边界值被包含（处理浮点精度问题）
+        epsilon = 1e-9
+        filtered = [(cid, score) for cid, score in fused if score >= request.minScore - epsilon]
         filtered.sort(key=lambda x: (-x[1], x[0]))
         top_k = filtered[: request.topK]
 
-        # 构建分数查找表
-        vec_score_map = {cid: s for cid, s in vector_hits}
-        bm25_score_map = {cid: s for cid, s in bm25_hits} if bm25_hits else {}
+        # 构建原始分数查找表（用于调试）
+        vec_raw_map = {cid: s for cid, s in vector_hits_raw}
+        bm25_raw_map = {cid: s for cid, s in bm25_hits_raw} if bm25_hits else {}
 
         hits = []
         for cid, score in top_k:
             hits.append(SearchHit(
                 id=cid,
-                score=float(score),
-                vectorScore=vec_score_map.get(cid),
-                bm25Score=bm25_score_map.get(cid) if bm25_score_map else None,
-                rerankScore=float(score) if reranker_used else None,
+                score=score,  # 已归一化到 [0, 100]
+                vectorScore=vec_raw_map.get(cid),
+                bm25Score=bm25_raw_map.get(cid) if bm25_raw_map else None,
+                rerankScore=score if reranker_used else None,
             ))
 
         return hits, reranker_used

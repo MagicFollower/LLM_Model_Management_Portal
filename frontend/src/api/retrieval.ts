@@ -49,7 +49,7 @@ export function validateSearchRequest(input: SearchRequest): void {
     !nonempty(input.query) ||
     Array.from(input.query).length > 2000 ||
     !Number.isInteger(input.topK) || input.topK < 1 || input.topK > 20 ||
-    !finite(input.minScore) || input.minScore < -1 || input.minScore > 1 ||
+    !finite(input.minScore) || input.minScore < 0 || input.minScore > 100 ||
     !Array.isArray(input.chunks)
   ) invalid()
   if (input.chunks.length > 512)
@@ -198,9 +198,11 @@ export async function searchVectors(input: SearchRequest, signal?: AbortSignal):
   let previousScore = Infinity
   let previousIndex = -1
   const hits = value.hits.map((hit: unknown) => {
+    // 使用 epsilon 容差确保边界值被包含（处理浮点精度问题）
+    const epsilon = 1e-9
     if (
       !object(hit) || !nonempty(hit.id) || !order.has(hit.id) || seen.has(hit.id) ||
-      !finite(hit.score) || hit.score < -1 || hit.score > 1 || hit.score < snapshot.minScore ||
+      !finite(hit.score) || hit.score < 0 || hit.score > 100 || hit.score < snapshot.minScore - epsilon ||
       hit.score > previousScore || (hit.score === previousScore && order.get(hit.id)! < previousIndex)
     ) throw invalidResponse()
     // 校验可选分数字段（存在时必须为 number）

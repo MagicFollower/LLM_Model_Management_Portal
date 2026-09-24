@@ -216,8 +216,8 @@ async def search(request: Request):
 
     # minScore
     import math
-    if not math.isfinite(req.minScore) or req.minScore < -1 or req.minScore > 1:
-        return error_response(422, "VALIDATION_ERROR", "minScore 必须是有限数且在 [-1, 1] 范围内")
+    if not math.isfinite(req.minScore) or req.minScore < 0 or req.minScore > 100:
+        return error_response(422, "VALIDATION_ERROR", "minScore 必须是有限数且在 [0, 100] 范围内")
 
     # chunks 验证
     if len(req.chunks) > config.MAX_CHUNKS:
