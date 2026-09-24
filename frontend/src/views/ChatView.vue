@@ -1601,6 +1601,9 @@ export default defineComponent({
   --chat-ink: #17243b;
   color: var(--chat-ink);
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100dvh - 72px - 48px);
 }
 .chat-heading {
   display: flex;
@@ -1608,6 +1611,7 @@ export default defineComponent({
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 20px;
+  flex-shrink: 0;
 }
 .chat-heading h1 {
   margin: 5px 0 6px;
@@ -1643,6 +1647,7 @@ export default defineComponent({
   background: #fff9ea;
   color: #885714;
   font-size: 13px;
+  flex-shrink: 0;
 }
 .mock-notice > i {
   font-size: 20px;
@@ -1671,7 +1676,8 @@ export default defineComponent({
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
   gap: 16px;
-  height: max(620px, calc(100dvh - 238px));
+  min-height: 420px;
+  flex: 1;
   min-width: 0;
   transition: margin-right 0.18s ease;
 }
