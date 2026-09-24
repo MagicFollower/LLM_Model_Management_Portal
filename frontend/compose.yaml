@@ -1,0 +1,14 @@
+services:
+  frontend:
+    build:
+      context: .
+      args:
+        VITE_DATA_MODE: ${VITE_DATA_MODE:-mock}
+    ports:
+      - "8080:80"
+    environment:
+      BACKEND_HOST: ${BACKEND_HOST:-host.docker.internal}
+      BACKEND_PORT: ${BACKEND_PORT:-3000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

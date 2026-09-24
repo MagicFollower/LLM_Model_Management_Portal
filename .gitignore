@@ -1,0 +1,59 @@
+# 依赖与构建产物
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# 环境变量（含本地覆盖）
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# 编辑器与 IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# 日志与调试
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# 测试与覆盖率
+coverage/
+*.lcov
+.nyc_output/
+
+# TypeScript 缓存
+*.tsbuildinfo
+
+# Vite / Vitest 缓存
+.vite/
+.vitest/
+
+# 浏览器测试产物（本地调试截图等）
+browser-test-*.png
+
+# Docker 构建中间层（可选，保留可加速二次构建）
+# .docker/
+
+# 后端占位（未来接入时按需扩展）
+# backend/node_modules/
+# backend/dist/
+# backend/.env
+# backend/.env.local
