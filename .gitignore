@@ -52,8 +52,14 @@ browser-test-*.png
 # Docker 构建中间层（可选，保留可加速二次构建）
 # .docker/
 
-# 后端占位（未来接入时按需扩展）
-# backend/node_modules/
-# backend/dist/
-# backend/.env
-# backend/.env.local
+# Python 后端
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/*.pyc
+backend/.cache/
+backend/.pytest_cache/
+backend/htmlcov/
+backend/.coverage
+backend/.env
+backend/.env.local

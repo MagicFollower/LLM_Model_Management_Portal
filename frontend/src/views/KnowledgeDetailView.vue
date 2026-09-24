@@ -10,6 +10,7 @@ import ProgressBar from 'primevue/progressbar'
 import ProgressSpinner from 'primevue/progressspinner'
 import Paginator from 'primevue/paginator'
 import { api, isMock } from '@/api'
+import KnowledgeRetrievalPanel from '@/components/KnowledgeRetrievalPanel.vue'
 import { useAuthStore } from '@/stores/auth'
 import type { Chunk, ChunkConfig, DocumentRecord, DocumentStatus, KnowledgeBase } from '@/types'
 
@@ -62,6 +63,7 @@ export default defineComponent({
     ProgressBar,
     ProgressSpinner,
     Paginator,
+    KnowledgeRetrievalPanel,
   },
   data() {
     return {
@@ -671,7 +673,7 @@ export default defineComponent({
         if (this.mockDownload(doc)) {
           blob = new Blob(
             [
-              `模拟下载说明\n\n文档名称：${doc.name}\n此文档的 PDF / Word 解析使用示例文本，当前演示不提供原始文件。\n本文件只是模拟能力说明，不是原文，不包含真实 PDF / DOCX 内容。\n请连接真实后端后使用原文下载。\n`,
+              `模拟下载说明\n\n文档名称：${doc.name}\n此文档的 PDF / DOCX 为占位内容，不参与真实检索，当前演示不提供原始文件。\n本文件只是模拟能力说明，不是原文，不包含真实 PDF / DOCX 内容。\n请连接真实后端后使用原文下载。\n`,
             ],
             { type: 'text/plain;charset=utf-8' },
           )
@@ -763,10 +765,12 @@ export default defineComponent({
       <div v-if="isMock" class="mock-notice" role="note">
         <i class="pi pi-info-circle" aria-hidden="true" />
         <div>
-          <strong>模拟能力演示，不是真实文档智能处理</strong>
+          <strong>真实正文切分 · 上传阶段模拟 · 检索与回答能力分开标注</strong>
           <p>
-            PDF / DOCX 使用示例文本；向量化、入库和阶段进度均为模拟，不调用真实模型。模拟 PDF / Word
-            下载仅提供说明 TXT，不冒充原文件。请勿上传敏感文件。
+            TXT / MD 按真实正文切分；PDF / DOCX 仅为占位内容，不参与真实检索，下载只提供说明 TXT。
+            上传、向量化、入库的阶段进度仍为模拟；local 模式在检索时使用固定 BGE 进行本地 CPU
+            真实计算，demo 模式仅演示固定分数。回答仍是模板模拟，种子资料为虚构内容。
+            原模型管理配置未自动接通，不执行 Rerank。服务不可用时不会自动降级 demo。请勿上传敏感文件。
           </p>
         </div>
       </div>
@@ -778,7 +782,7 @@ export default defineComponent({
         </div>
         <div class="stat-card">
           <span class="muted">已就绪</span><strong>{{ readyCount }}</strong
-          ><small class="muted">可用于知识检索</small>
+          ><small class="muted">{{ isMock ? '真实检索仅支持就绪 TXT / MD' : '可用于知识检索' }}</small>
         </div>
         <div class="stat-card">
           <span class="muted">处理中 / 失败</span
@@ -812,7 +816,7 @@ export default defineComponent({
               默认切分 {{ kb.chunkSize }} 字符，重叠 {{ kb.chunkOverlap }} 字符；单文件最大 20 MiB。
             </p>
           </div>
-          <Tag v-if="isMock" value="模拟上传与处理" severity="warn" />
+          <Tag v-if="isMock" value="上传与阶段进度模拟" severity="warn" />
         </div>
         <input
           ref="fileInput"
@@ -884,7 +888,7 @@ export default defineComponent({
                 />
               </div>
               <small v-if="item.state === 'uploading' && item.progress === 100" class="muted"
-                >传输完成，等待服务端确认…</small
+                >{{ isMock ? '模拟上传进度完成，正在保存正文…' : '传输完成，等待服务端确认…' }}</small
               >
               <p v-if="item.error" class="error-copy" role="alert">{{ item.error }}</p>
             </div>
@@ -923,7 +927,8 @@ export default defineComponent({
             </div>
           </article>
           <p class="muted queue-note">
-            上传进度仅表示文件传输；下方流水线才是处理进度。离开页面会停止本地排队与状态更新，已发出的请求无法在此取消；返回后请刷新确认。
+            {{ isMock ? '上传百分比与下方处理阶段均为模拟，不表示已建立真实向量索引。' : '上传进度仅表示文件传输；下方流水线才是处理进度。' }}
+            离开页面会停止本地排队与状态更新，已发出的请求无法在此取消；返回后请刷新确认。
           </p>
         </div>
       </section>
@@ -1040,7 +1045,7 @@ export default defineComponent({
               <div class="document-badges">
                 <Tag :value="statusLabel(doc.status)" :severity="severity(doc.status)" /><Tag
                   v-if="isMock || doc.simulated"
-                  value="模拟处理"
+                  :value="mockDownload(doc) ? '占位内容 · 不参与真实检索' : '真实正文切分 · 阶段模拟'"
                   severity="warn"
                 /><small class="muted">{{ formatDate(doc.createdAt) }}</small>
               </div>
@@ -1129,7 +1134,7 @@ export default defineComponent({
                   :severity="severity(selectedDocument.status)"
                 /><Tag
                   v-if="isMock || selectedDocument.simulated"
-                  value="模拟内容与处理"
+                  :value="mockDownload(selectedDocument) ? '占位内容 · 不参与真实检索' : '真实正文切分 · 阶段模拟'"
                   severity="warn"
                 />
               </div>
@@ -1189,7 +1194,7 @@ export default defineComponent({
               <p class="muted config-note">
                 {{
                   canManage
-                    ? '修改参数后先预览，再显式确认重新处理。预览不会更新索引；失败文档也可直接按原参数重试。'
+                    ? '修改参数后先预览，再显式确认重新处理。预览不覆盖正式片段，不参与真实检索；失败文档也可直接按原参数重试。'
                     : '当前为只读模式，不能修改参数或重新处理。'
                 }}
               </p>
@@ -1227,7 +1232,7 @@ export default defineComponent({
             </div>
             <div class="chunk-tabs" role="group" aria-label="选择片段来源">
               <Button
-                label="已入库片段"
+                label="已提交片段"
                 size="small"
                 :outlined="chunkMode !== 'stored'"
                 :severity="chunkMode === 'stored' ? undefined : 'secondary'"
@@ -1245,7 +1250,13 @@ export default defineComponent({
             </div>
             <p v-if="chunkMode === 'preview'" class="preview-warning" role="note">
               仅预览 · {{ previewConfig?.chunkSize }} / {{ previewConfig?.chunkOverlap }} 字符 ·
-              尚未更新索引。{{ isMock || selectedDocument.simulated ? '当前为模拟内容。' : '' }}
+              尚未提交，不参与真实检索。{{
+                isMock || selectedDocument.simulated
+                  ? mockDownload(selectedDocument)
+                    ? 'PDF / DOCX 仅展示占位内容。'
+                    : 'TXT / MD 使用实际正文字符切分，阶段进度仍为模拟。'
+                  : ''
+              }}
             </p>
             <div
               v-if="previewLoading || (chunkMode === 'stored' && chunksLoading)"
@@ -1287,7 +1298,7 @@ export default defineComponent({
               >
                 <header>
                   <strong>片段 {{ chunkFirst + index + 1 }}</strong
-                  ><span>{{ chunk.content.length }} 字符</span>
+                  ><span>{{ Array.from(chunk.content).length }} 字符</span>
                 </header>
                 <div class="chunk-meta">
                   <span>源序号 {{ chunk.index }}</span
@@ -1311,6 +1322,7 @@ export default defineComponent({
           </template>
         </aside>
       </div>
+      <KnowledgeRetrievalPanel :knowledge-base-id="kbId" />
     </template>
 
     <Dialog
@@ -1362,10 +1374,11 @@ export default defineComponent({
         </div>
       </dl>
       <p class="muted">
-        将重新执行解析、切分、向量化和入库，可能产生模型调用费用。提交后请等待状态就绪，新版本由服务端完成处理后生效；不会把本次预览直接写入索引。
+        提交参数后请等待处理成功，新版本才会生效；不会把本次预览直接覆盖为正式片段。
       </p>
       <p v-if="isMock || processTarget?.simulated" class="preview-warning">
-        演示模式：此流程为模拟，不调用真实模型，不产生真实向量索引。
+        Mock 模式：TXT / MD 重新切分实际正文，PDF / DOCX 仍为占位内容；上传处理阶段模拟，
+        此流程不调用模型、不建立真实向量索引。local 检索时才按需进行本地 CPU 向量计算。
       </p>
       <div v-if="processError" class="error-banner" role="alert">{{ processError }}</div>
       <template #footer

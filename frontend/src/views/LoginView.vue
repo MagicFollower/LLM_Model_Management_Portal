@@ -117,8 +117,17 @@ export default defineComponent({
           fluid
         />
         <div v-if="isMock" class="demo-login">
-          <span class="demo-label"><i class="pi pi-info-circle"></i> 当前为独立演示环境</span>
-          <p>无需连接后端。模型调用、向量化与检索均为模拟，请勿输入真实密钥或敏感文档。</p>
+          <span class="demo-label"><i class="pi pi-info-circle"></i> Mock 业务数据 · 模板模拟回答</span>
+          <p>
+            账号与业务数据为本地演示。TXT / MD 按真实正文切分，上传与处理阶段仍模拟；PDF / DOCX
+            仅为占位内容，不参与真实检索。种子资料为虚构演示内容。
+          </p>
+          <p>
+            默认 local 使用固定 BGE 本地 CPU 真实检索，需要启动本地服务并在知识库详情显式加载模型；
+            显式 demo 可离线展示固定分数，服务失败不会自动降级。回答仍是模板模拟，不是 Chat 模型输出。
+            原模型管理配置未自动接通，本地测试固定使用 BAAI/bge-small-zh-v1.5，不执行 Rerank。
+            请勿输入真实密钥或敏感文档。
+          </p>
           <div class="button-row">
             <Button
               label="管理员体验"

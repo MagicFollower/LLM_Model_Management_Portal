@@ -108,6 +108,7 @@ async function seededUser(username: string): Promise<User> {
   return user
 }
 beforeEach(() => {
+  vi.stubEnv('VITE_RETRIEVAL_MODE', 'demo')
   vi.useFakeTimers()
   vi.setSystemTime(new Date('2026-09-24T08:00:00Z'))
   local = new MemoryStorage()
@@ -120,6 +121,7 @@ afterEach(() => {
   vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
 })
 
 describe('认证、种子与持久化', () => {

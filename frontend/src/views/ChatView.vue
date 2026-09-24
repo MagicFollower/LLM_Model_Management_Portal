@@ -7,7 +7,7 @@
         <p class="muted">让每一次回答，都有迹可循。</p>
       </div>
       <div class="button-row">
-        <Tag :value="isMock ? '模拟演示' : '真实 API 模式'" :severity="isMock ? 'warn' : 'info'" />
+        <Tag :value="isMock ? 'Mock 数据 · 模板回答' : '真实 API 模式'" :severity="isMock ? 'warn' : 'info'" />
         <Button
           label="刷新"
           icon="pi pi-refresh"
@@ -22,8 +22,20 @@
     <div v-if="isMock" class="mock-notice" role="note">
       <i class="pi pi-info-circle" aria-hidden="true"></i>
       <div>
-        <strong>当前为模拟模式，不是实际模型回答</strong
-        ><span>回复、检索与引用仅用于演示，不进行真实推理或向量检索。请勿输入敏感信息。</span>
+        <strong>回答仍为模板模拟，不是 Chat 模型输出</strong>
+        <span v-if="retrievalMode === 'local'">
+          当前 local：关联知识库时使用固定 BGE 本地 CPU 真实检索；请先在知识库详情加载本地模型。
+          服务不可用会报错，不会自动切换 demo；未关联知识库不需要检索服务。
+        </span>
+        <span v-else-if="retrievalMode === 'demo'">
+          当前 demo：离线固定分数与引用演示，不进行真实向量检索，也不调用本地模型健康接口。
+        </span>
+        <span v-else>检索模式配置无效，请将 VITE_RETRIEVAL_MODE 设置为 local 或 demo 后重新启动。</span>
+        <span>
+          TXT / MD 为真实正文切分，上传与处理阶段仍模拟；PDF / DOCX 占位不参与真实检索。
+          原模型管理配置未自动接通，本地测试固定使用 BAAI/bge-small-zh-v1.5，不执行 Rerank。
+          历史 demo 引用仍为演示，不随当前模式改变。请勿输入敏感信息。
+        </span>
       </div>
     </div>
     <div v-if="pageError" class="error-banner feedback" role="alert">
@@ -336,7 +348,9 @@
                   <div v-if="message.content" class="message-text">{{ message.content }}</div>
                   <span v-else class="muted">{{
                     message.status === 'streaming'
-                      ? '正在准备回复…'
+                      ? usesLocalRetrieval
+                        ? '正在检索/生成演示回复…'
+                        : '正在准备回复…'
                       : message.status === 'cancelled'
                         ? '生成已取消，未返回正文。'
                         : message.status === 'error'
@@ -408,6 +422,8 @@
               rows="3"
               fluid
               aria-label="输入消息"
+              :invalid="!!draftError"
+              :aria-describedby="usesLocalRetrieval ? 'chat-query-limit' : undefined"
               :placeholder="
                 activeConversation
                   ? '输入你的问题，探索知识中的答案…'
@@ -441,10 +457,22 @@
               />
             </div>
           </div>
+          <p
+            v-if="usesLocalRetrieval"
+            id="chat-query-limit"
+            :class="draftError ? 'error-banner' : 'composer-disclaimer'"
+            :role="draftError ? 'alert' : 'status'"
+          >
+            {{ draftError || `关联知识库的问题最多 2000 个 Unicode 码点，当前 ${draftLength} / 2000。` }}
+          </p>
           <p class="composer-disclaimer">
             {{
               isMock
-                ? '模拟环境 · 不调用实际模型 · 不作为事实依据'
+                ? retrievalMode === 'local'
+                  ? 'local：关联库使用本地 CPU 真实检索 · 回答为模板模拟，不作为事实依据'
+                  : retrievalMode === 'demo'
+                    ? 'demo：固定分数演示 · 模板模拟回答，不作为事实依据'
+                    : '检索模式配置无效 · 回答仍为模板模拟'
                 : '模型回答仅供参考；引用相似度不等于答案准确率。'
             }}
           </p>
@@ -629,17 +657,21 @@
               <dd>v{{ citationDetail.version }}</dd>
             </div>
             <div>
-              <dt>相似度 score</dt>
+              <dt>引用 score（历史快照）</dt>
               <dd>{{ formatScore(citationDetail.score) }}</dd>
             </div>
           </dl>
           <p class="score-explanation">
             <i class="pi pi-info-circle" aria-hidden="true"></i
-            >相似度是检索匹配分数，不是答案准确率，也不是可信度百分比。
+            >分数不是答案准确率，也不是可信度百分比。
+            <span v-if="isMock">
+              请以该条消息的生成说明区分来源：local 检索返回真实分数，demo 使用固定演示分数。
+              旧演示引用不会因当前切换到 local 就变成真实检索结果。
+            </span>
           </p>
           <div class="source-content-heading">
             <h3>完整引用内容</h3>
-            <span class="muted">{{ citationDetail.content.length }} 字符</span>
+            <span class="muted">{{ Array.from(citationDetail.content).length }} 字符</span>
           </div>
           <div class="source-content">
             {{ citationDetail.content || '此引用没有可展示的内容。' }}
@@ -657,6 +689,7 @@
           />
           <p class="muted download-hint">
             下载时再次校验权限；原文件可能已更新，请核对引用版本。
+            <span v-if="isMock">历史 PDF / DOCX 演示引用只提供占位说明 TXT，不是原文件，也不参与真实检索。</span>
           </p></template
         >
       </div>
@@ -678,6 +711,7 @@ import Tag from 'primevue/tag'
 import Skeleton from 'primevue/skeleton'
 import ProgressSpinner from 'primevue/progressspinner'
 import { api, isMock } from '@/api'
+import { getRetrievalMode } from '@/api/retrieval'
 import { useAuthStore } from '@/stores/auth'
 import type {
   Citation,
@@ -819,6 +853,29 @@ export default defineComponent({
     }
   },
   computed: {
+    retrievalMode(): 'local' | 'demo' | null {
+      if (!this.isMock) return null
+      try {
+        return getRetrievalMode()
+      } catch {
+        return null
+      }
+    },
+    usesLocalRetrieval(): boolean {
+      return (
+        this.isMock &&
+        this.retrievalMode === 'local' &&
+        !!this.activeConversation?.knowledgeBaseIds.length
+      )
+    },
+    draftLength(): number {
+      return Array.from(this.draft.trim()).length
+    },
+    draftError(): string {
+      return this.usesLocalRetrieval && this.draftLength > 2000
+        ? '关联知识库的问题不能超过 2000 个 Unicode 码点（去除首尾空白），请缩短后发送。'
+        : ''
+    },
     chatModels(): Model[] {
       return this.models.filter((model) => model.type === 'chat' && model.enabled)
     },
@@ -846,6 +903,8 @@ export default defineComponent({
     configurationIssue(): string {
       const conversation = this.activeConversation
       if (!conversation) return ''
+      if (this.isMock && !this.retrievalMode && conversation.knowledgeBaseIds.length)
+        return '检索模式无效，请配置 VITE_RETRIEVAL_MODE 为 local 或 demo 后重新启动。'
       if (!this.chatModels.some((model) => model.id === conversation.modelId))
         return '此会话的模型已停用、不可访问或不是 Chat 模型，请重新选择。'
       if (
@@ -878,6 +937,7 @@ export default defineComponent({
       return (
         !!this.activeConversation &&
         !!this.draft.trim() &&
+        !this.draftError &&
         !this.interactionLocked &&
         !this.historyError &&
         !this.configurationIssue &&
@@ -890,7 +950,7 @@ export default defineComponent({
       return {
         creating: '正在创建生成任务…',
         connecting: '正在同步消息并连接…',
-        streaming: '正在生成回复…',
+        streaming: this.usesLocalRetrieval ? '正在检索/生成演示回复…' : '正在生成回复…',
         syncing: '正在同步消息记录…',
         '': '',
       }[this.phase]

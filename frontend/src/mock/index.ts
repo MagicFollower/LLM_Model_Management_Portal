@@ -17,6 +17,9 @@ import type {
   UserInput,
 } from '@/types'
 import { validateChunkConfig, validateFile, splitText } from '@/utils/validation'
+import type { KnowledgeSearchResult, RetrievalMode } from '@/types/retrieval'
+import { getRetrievalMode, validateSearchRequest } from '@/api/retrieval'
+import { createKnowledgeRetrieval } from './retrieval'
 
 export const STORAGE_KEY = 'model-workspace.mock.database'
 export const SESSION_KEY = 'model-workspace.mock.user-id'
@@ -58,6 +61,11 @@ interface Task {
   citations: Citation[]
   controller: AbortController
   running: boolean
+  mode: RetrievalMode
+  userId: string
+  query: string
+  config: Pick<ConversationInput, 'modelId' | 'knowledgeBaseIds'>
+  validateSources?: (signal?: AbortSignal) => void
 }
 const tasks = new Map<string, Task>()
 let recovered = false
@@ -502,6 +510,44 @@ function collectCitations(db: Database, selected: string[]): Citation[] {
     )
     .slice(0, 3)
 }
+const knowledgeRetrieval = createKnowledgeRetrieval({
+  read(selected, prepare, mode) {
+    const { db, user } = context()
+    const knowledgeBases = selected.map((id) => {
+      const kb = knowledge(db, user, id)
+      knowledgeModels(db, user, kb)
+      return kb
+    })
+    const documents = db.documents.filter((doc) => selected.includes(doc.record.knowledgeBaseId))
+    if (prepare) advance(db, documents)
+    return {
+      userId: user.id,
+      knowledgeBases,
+      documents,
+      users: db.users.map((u) => ({ id: u.id, role: u.role, enabled: u.enabled, modelIds: u.modelIds })),
+      models: db.models.map((m) => ({ id: m.id, enabled: m.enabled, type: m.type })),
+      ...(mode === 'demo' && prepare ? { demoCitations: collectCitations(db, selected) } : {}),
+    }
+  },
+  citationId: () => uid('citation'),
+})
+
+export function searchKnowledgeBases(
+  knowledgeBaseIds: string[],
+  query: string,
+  options: { topK: number; minScore: number },
+  signal?: AbortSignal,
+): Promise<KnowledgeSearchResult> {
+  return knowledgeRetrieval.search(knowledgeBaseIds, query, options, signal)
+}
+
+function localRetrievalText(query: string, result: KnowledgeSearchResult): string {
+  const excerpts = result.hits.map((hit, index) =>
+    `${index + 1}. ${hit.documentName} · ${hit.section}\n${Array.from(hit.content).slice(0, 200).join('')}`,
+  ).join('\n\n')
+  return `【本地 BGE 实际检索 · 非 LLM 模板回答】\n实际Embedding检索，回答仍为模板，不是Chat模型输出。\n问题：“${Array.from(query).slice(0, 200).join('')}”。\n实际检索模型：${result.modelId}，${result.dimension} 维；未调用 Chat LLM 或 Rerank。\n${result.hits.length ? `以下是检索命中片段摘录，不是自动推理结论：\n${excerpts}` : result.totalChunks ? '当前阈值下没有命中，不提供来源或编造引用。' : '没有可参与检索的 ready TXT/MD 正文片段，不提供来源或编造引用。'}\n${result.excludedDocuments ? `已排除 ${result.excludedDocuments} 份 PDF/DOCX 占位文档。\n` : ''}示例资料可能为虚构，分数不是答案准确率，请自行核对原文。`
+}
+
 function wait(ms: number, signals: AbortSignal[]): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signals.some((signal) => signal.aborted)) {
@@ -939,14 +985,19 @@ export const mockApi: Api = {
         assistantMessageId: existing.assistantMessageId,
       })
     }
+    const mode = getRetrievalMode()
+    if (mode === 'local' && chat.knowledgeBaseIds.length)
+      validateSearchRequest({ query: body, topK: 5, minScore: 0.3, chunks: [] })
     if (db.messages.some((item) => item.conversationId === id && item.status === 'streaming'))
       throw problem(409, '此会话已有进行中的生成任务。')
-    advance(
+    if (mode === 'demo') advance(
       db,
       db.documents.filter((doc) => chat.knowledgeBaseIds.includes(doc.record.knowledgeBaseId)),
     )
-    const citations = collectCitations(db, chat.knowledgeBaseIds)
-    const text = `【模拟示例，不是实际模型回答】\n你提出的问题是：“${body.slice(0, 200)}”。\n此回复由预设模板生成，未调用任何模型，也未进行真实向量检索。\n${citations.length ? `为演示引用溯源，选取了已选知识库中 ${citations.length} 份就绪文档的示例片段。引用分数 0.88 仅为模拟值，不代表答案准确率。请查看引用并自行核对原文。` : '当前没有可引用的已选知识库就绪文档，因此不提供来源或编造引用。'}\n此内容仅用于演示流式交互，不作为事实依据。`
+    const citations = mode === 'demo' ? collectCitations(db, chat.knowledgeBaseIds) : []
+    const text = mode === 'demo'
+      ? `【模拟示例，不是实际模型回答】\n你提出的问题是：“${body.slice(0, 200)}”。\n此回复由预设模板生成，未调用任何模型，也未进行真实向量检索。\n${citations.length ? `为演示引用溯源，选取了已选知识库中 ${citations.length} 份就绪文档的示例片段。引用分数 0.88 仅为模拟值，不代表答案准确率。请查看引用并自行核对原文。` : '当前没有可引用的已选知识库就绪文档，因此不提供来源或编造引用。'}\n此内容仅用于演示流式交互，不作为事实依据。`
+      : `【模拟模板，不是实际模型回答】\n你提出的问题是：“${Array.from(body).slice(0, 200).join('')}”。\n此会话未关联知识库，未执行 Embedding 检索，也未调用 Chat LLM。不提供来源或编造引用。`
     const createdAt = now()
     const userMessage: Message = {
       id: uid('message'),
@@ -979,7 +1030,11 @@ export const mockApi: Api = {
     })
     chat.updatedAt = createdAt
     persist(db)
-    tasks.set(generationId, { text, citations, controller: new AbortController(), running: false })
+    tasks.set(generationId, {
+      text, citations, controller: new AbortController(), running: false,
+      mode, userId: user.id, query: body,
+      config: { modelId: chat.modelId, knowledgeBaseIds: [...chat.knowledgeBaseIds] },
+    })
     return copy({ generationId, assistantMessageId: assistant.id })
   },
   async stream(id, onEvent, signal) {
@@ -1012,19 +1067,33 @@ export const mockApi: Api = {
       throw problem(409, '生成任务已丢失，请刷新消息。')
     }
     task.running = true
+    const abort = (): void => task.controller.abort()
+    signal.addEventListener('abort', abort, { once: true })
+    if (signal.aborted) abort()
     const checked = (): ReturnType<typeof requestContext> => {
       if (signal.aborted || task.controller.signal.aborted || tasks.get(id) !== task)
         throw abortError()
       const state = requestContext(id)
-      if (state.user.id !== initial.user.id) throw problem(401, '生成期间登录身份已改变。')
+      if (state.user.id !== task.userId) throw problem(401, '生成期间登录身份已改变。')
       if (state.message.status === 'cancelled') throw abortError()
       if (state.message.status !== 'streaming') throw problem(409, '生成任务已结束。')
-      conversationModels(state.db, state.user, state.request)
+      conversationModels(state.db, state.user, task.config)
+      task.validateSources?.(task.controller.signal)
       task.citations.forEach((citation) => readableCitation(state.db, state.user, citation))
       return state
     }
     try {
       checked()
+      if (task.mode === 'local' && task.config.knowledgeBaseIds.length) {
+        const prepared = knowledgeRetrieval.prepare(
+          task.config.knowledgeBaseIds, task.query, { topK: 5, minScore: 0.3 }, task.mode,
+        )
+        task.validateSources = prepared.validate
+        const result = await prepared.run(task.controller.signal)
+        checked()
+        task.citations = copy(result.hits)
+        task.text = localRetrievalText(task.query, result)
+      }
       while (true) {
         await wait(30, [signal, task.controller.signal])
         const state = checked()
@@ -1063,6 +1132,7 @@ export const mockApi: Api = {
       }
       throw aborted ? abortError() : error
     } finally {
+      signal.removeEventListener('abort', abort)
       task.running = false
       if (tasks.get(id) === task) tasks.delete(id)
     }

@@ -347,8 +347,11 @@ export default defineComponent({
     </header>
     <div v-if="isMock" class="mock-notice" role="note">
       <i class="pi pi-info-circle" aria-hidden="true" /><span
-        ><strong>演示模式</strong> · 文档解析、向量化和入库为模拟能力，不调用真实模型；PDF / Word
-        使用示例文本，请勿上传敏感文件。</span
+        ><strong>Mock 业务数据 · 检索模式独立</strong> · TXT / MD 按真实正文切分；上传、向量化、入库的阶段进度仍模拟。
+        local 模式使用固定 BGE 本地 CPU 真实检索，需在详情页加载模型；demo 仅展示固定分数，不调用本地服务。
+        PDF / DOCX 为占位内容，不参与真实检索。回答仍是模板模拟，种子资料为虚构内容。
+        原模型管理配置未自动接通，本地测试固定使用 BAAI/bge-small-zh-v1.5，不执行 Rerank。
+        服务不可用不会自动切换 demo，请勿上传敏感文件。</span
       >
     </div>
     <div v-if="success" class="success-notice" role="status">{{ success }}</div>
@@ -423,12 +426,12 @@ export default defineComponent({
         </p>
         <dl class="card-meta">
           <div>
-            <dt>Embedding</dt>
+            <dt>Embedding 配置</dt>
             <dd>{{ modelName(kb.embeddingModelId) }}</dd>
           </div>
           <div>
-            <dt>Rerank</dt>
-            <dd>{{ kb.rerankModelId ? modelName(kb.rerankModelId) : '未启用' }}</dd>
+            <dt>Rerank 配置</dt>
+            <dd>{{ kb.rerankModelId ? modelName(kb.rerankModelId) : '未配置' }}</dd>
           </div>
           <div>
             <dt>切分 / 重叠</dt>
@@ -513,7 +516,7 @@ export default defineComponent({
               :options="embeddingOptions"
               option-label="label"
               option-value="value"
-              placeholder="必选，用于文档向量化"
+              :placeholder="isMock ? '必选，保存业务模型配置' : '必选，用于文档向量化'"
               :disabled="saving || embeddingLocked || !!modelsError"
               :invalid="!!formErrors.embeddingModelId"
             /><small v-if="formErrors.embeddingModelId" class="field-error">{{
@@ -538,6 +541,10 @@ export default defineComponent({
             }}</small>
           </div>
         </div>
+        <p v-if="isMock" class="lock-notice">
+          此处仅保存业务模型配置，未自动接入模型管理中的服务。local 检索固定使用本地
+          BAAI/bge-small-zh-v1.5，不执行已配置的 Rerank；demo 为固定分数演示。
+        </p>
         <p v-if="checkingDocuments" class="muted" role="status">
           正在检查已有文档，暂不可更换 Embedding 模型…
         </p>
@@ -553,7 +560,7 @@ export default defineComponent({
         </div>
         <p v-else-if="editing && embeddingLocked" class="lock-notice">
           <i class="pi pi-lock" aria-hidden="true" /> 已有
-          {{ checkedDocumentCount }} 份文档，禁止更换 Embedding 模型，以避免索引维度不一致。
+          {{ checkedDocumentCount }} 份文档，按现有业务规则禁止更换 Embedding 模型配置。
         </p>
         <div class="form-grid">
           <div class="field">
@@ -618,7 +625,7 @@ export default defineComponent({
         确认删除“<strong>{{ deleteTarget?.name }}</strong
         >”？
       </p>
-      <p class="muted">此操作不可撤销，库内文档、片段及索引将被移除，相关历史引用可能失效。</p>
+      <p class="muted">此操作不可撤销，库内文档、片段及相关业务记录将被移除，相关历史引用可能失效。</p>
       <div v-if="deleteError" class="error-banner" role="alert">{{ deleteError }}</div>
       <template #footer
         ><Button
