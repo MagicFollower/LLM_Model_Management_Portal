@@ -39,6 +39,8 @@ class ChunkInput(BaseModel):
     """输入文档块"""
     id: str
     content: str
+    knowledgeBaseId: Optional[str] = None
+    documentType: Optional[str] = None
 
 
 class SearchRequest(BaseModel):
@@ -47,12 +49,19 @@ class SearchRequest(BaseModel):
     topK: int = Field(..., ge=1, le=20)
     minScore: float = Field(..., ge=-1.0, le=1.0)
     chunks: List[ChunkInput]
+    enableBm25: Optional[bool] = False
+    enableRerank: Optional[bool] = False
+    knowledgeBaseIds: Optional[List[str]] = None
+    documentTypes: Optional[List[str]] = None
 
 
 class SearchHit(BaseModel):
     """检索结果"""
     id: str
     score: float
+    vectorScore: Optional[float] = None
+    bm25Score: Optional[float] = None
+    rerankScore: Optional[float] = None
 
 
 class SearchResponseData(BaseModel):
@@ -62,6 +71,7 @@ class SearchResponseData(BaseModel):
     dimension: int = 512
     elapsedMs: float
     totalChunks: int
+    rerankerUsed: Optional[bool] = False
 
 
 class SearchResponse(BaseModel):

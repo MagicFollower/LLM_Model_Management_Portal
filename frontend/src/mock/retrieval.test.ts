@@ -116,7 +116,9 @@ describe('local 候选与引用映射', () => {
     expect(first).toMatchObject({ mode: 'local', modelId: RETRIEVAL_MODEL_ID, dimension: 512, totalChunks: 3, excludedDocuments: 0 })
     expect(first.hits[0]).toMatchObject({ chunkId: chunks[1]!.id, content: topics[1], score: 0.7312, version: 1 })
     expect(second.hits[0]).toMatchObject({ chunkId: chunks[2]!.id, content: topics[2] })
-    expect(JSON.parse(fetchSpy.mock.calls[0]![1]!.body as string).chunks).toEqual(chunks.map(({ id, content }) => ({ id, content })))
+    expect(JSON.parse(fetchSpy.mock.calls[0]![1]!.body as string).chunks).toEqual(
+      chunks.map(({ id, content }) => expect.objectContaining({ id, content })),
+    )
     first.hits[0]!.content = '不能改写正文'
     expect((await mockApi.chunks('doc-kb-member'))[1]!.content).toBe(topics[1])
   })

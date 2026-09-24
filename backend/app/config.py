@@ -29,3 +29,19 @@ LRU_CAPACITY = 2048
 # 服务配置
 HOST = "127.0.0.1"
 PORT = 8001
+
+# BM25 配置
+BM25_ENABLED = os.environ.get("BM25_ENABLED", "false").lower() == "true"
+
+# Reranker 配置
+RERANKER_MODEL_ID = "BAAI/bge-reranker-v2-m3"
+RERANKER_MODEL_PATH = os.environ.get("RERANKER_MODEL_PATH")
+RERANKER_ENABLED = os.environ.get("RERANKER_ENABLED", "false").lower() == "true"
+RERANKER_TOP_N = int(os.environ.get("RERANKER_TOP_N", "20"))
+RERANKER_TIMEOUT = int(os.environ.get("RERANKER_TIMEOUT", "30"))  # 秒
+RERANKER_BATCH_SIZE = int(os.environ.get("RERANKER_BATCH_SIZE", "8"))  # 批处理大小
+
+# 混合检索权重
+BM25_WEIGHT = float(os.environ.get("BM25_WEIGHT", "0.3"))
+VECTOR_WEIGHT = float(os.environ.get("VECTOR_WEIGHT", "0.7"))
+RRF_K = 60  # RRF 常数

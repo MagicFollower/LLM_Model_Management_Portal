@@ -3,3 +3,6 @@ uvicorn[standard]>=0.34,<1
 sentence-transformers>=3.0,<4
 numpy>=1.26,<3
 pydantic>=2.0,<3
+rank-bm25>=0.2,<1
+FlagEmbedding>=1.2,<2
+python-dotenv>=1.0,<2

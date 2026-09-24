@@ -535,7 +535,7 @@ const knowledgeRetrieval = createKnowledgeRetrieval({
 export function searchKnowledgeBases(
   knowledgeBaseIds: string[],
   query: string,
-  options: { topK: number; minScore: number },
+  options: { topK: number; minScore: number; enableBm25?: boolean; enableRerank?: boolean },
   signal?: AbortSignal,
 ): Promise<KnowledgeSearchResult> {
   return knowledgeRetrieval.search(knowledgeBaseIds, query, options, signal)

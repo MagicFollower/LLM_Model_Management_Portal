@@ -4,6 +4,7 @@ import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import InputNumber from 'primevue/inputnumber'
 import Tag from 'primevue/tag'
+import ToggleSwitch from 'primevue/toggleswitch'
 import ProgressSpinner from 'primevue/progressspinner'
 import {
   RETRIEVAL_MODEL_ID,
@@ -19,7 +20,7 @@ const errorMessage = (error: unknown): string =>
 
 export default defineComponent({
   name: 'KnowledgeRetrievalPanel',
-  components: { Button, InputText, InputNumber, Tag, ProgressSpinner },
+  components: { Button, InputText, InputNumber, Tag, ToggleSwitch, ProgressSpinner },
   props: {
     knowledgeBaseId: { type: String, required: true },
   },
@@ -35,6 +36,8 @@ export default defineComponent({
       query: '',
       topK: 5,
       minScore: 0.3,
+      enableBm25: false,
+      enableRerank: false,
       searching: false,
       searchError: '',
       result: null as KnowledgeSearchResult | null,
@@ -45,6 +48,16 @@ export default defineComponent({
   computed: {
     isLocal(): boolean {
       return this.retrievalMode === 'local'
+    },
+    rerankerStatus(): { label: string; severity: 'success' | 'info' | 'warn' | 'danger' } | null {
+      const r = this.health?.reranker
+      if (!r) return null
+      switch (r.status) {
+        case 'ready': return { label: 'Reranker 就绪', severity: 'success' }
+        case 'loading': return { label: 'Reranker 加载中', severity: 'warn' }
+        case 'error': return { label: 'Reranker 加载失败', severity: 'danger' }
+        default: return { label: 'Reranker 未加载', severity: 'info' }
+      }
     },
     canSearch(): boolean {
       return (
@@ -80,6 +93,23 @@ export default defineComponent({
           return '模型未加载'
       }
     },
+    /** 根据启用的检索模式返回分数范围配置 */
+    minScoreConfig(): { min: number; max: number; step: number; hint: string; default: number } {
+      if (this.enableRerank) {
+        // Reranker 归一化分数 [0, 1]（优先级最高，因为最终分数来自 Reranker）
+        return { min: 0, max: 1, step: 0.05, default: 0.3, hint: 'Reranker 归一化分数 ∈ [0, 1]' }
+      }
+      if (this.enableBm25) {
+        // RRF 融合分数范围 (0, 0.02]，minScore 不适用
+        return { min: 0, max: 0.05, step: 0.001, default: 0, hint: 'RRF 融合模式：分数为排名加权，已自动按 topK 截断，无需阈值' }
+      }
+      // 纯向量检索：余弦相似度 [-1, 1]
+      return { min: -1, max: 1, step: 0.05, default: 0.3, hint: '向量余弦相似度 ∈ [-1, 1]' }
+    },
+  },
+  watch: {
+    enableBm25() { this._syncMinScore() },
+    enableRerank() { this._syncMinScore() },
   },
   mounted() {
     if (this.isLocal) void this.checkHealth()
@@ -149,7 +179,12 @@ export default defineComponent({
         this.result = await searchKnowledgeBases(
           [this.knowledgeBaseId],
           this.query.trim(),
-          { topK: this.topK, minScore: this.minScore },
+          {
+            topK: this.topK,
+            minScore: this.minScore,
+            enableBm25: this.enableBm25,
+            enableRerank: this.enableRerank,
+          },
           controller.signal,
         )
         this.searched = true
@@ -172,6 +207,12 @@ export default defineComponent({
       if (score >= 0.5) return 'info'
       if (score >= 0.3) return 'warn'
       return 'danger'
+    },
+    _syncMinScore() {
+      const cfg = this.minScoreConfig
+      if (this.minScore < cfg.min || this.minScore > cfg.max) {
+        this.minScore = cfg.default
+      }
     },
   },
 })
@@ -200,6 +241,10 @@ export default defineComponent({
         <div><dt>维度</dt><dd>{{ health.dimension }}</dd></div>
         <div><dt>设备</dt><dd>{{ health.device }}</dd></div>
       </dl>
+      <div v-if="rerankerStatus" class="reranker-status">
+        <Tag :value="rerankerStatus.label" :severity="rerankerStatus.severity" />
+        <span v-if="health.reranker?.error" class="muted">{{ health.reranker.error }}</span>
+      </div>
       <div v-if="health.status === 'error' && health.error" class="retrieval-error">
         {{ health.error }}
       </div>
@@ -276,12 +321,36 @@ export default defineComponent({
           <InputNumber
             id="retrieval-min-score"
             v-model="minScore"
-            :min="-1"
-            :max="1"
-            :step="0.05"
-            :max-fraction-digits="2"
+            :min="minScoreConfig.min"
+            :max="minScoreConfig.max"
+            :step="minScoreConfig.step"
+            :max-fraction-digits="minScoreConfig.step < 0.01 ? 3 : 2"
+            :disabled="enableBm25"
             fluid
           />
+          <span class="muted param-hint">{{ minScoreConfig.hint }}</span>
+        </div>
+      </div>
+      <div class="toggle-row">
+        <div class="toggle-field">
+          <label for="retrieval-bm25">BM25 关键词检索</label>
+          <ToggleSwitch
+            id="retrieval-bm25"
+            v-model="enableBm25"
+            input-id="retrieval-bm25"
+            :disabled="searching"
+          />
+          <span class="muted toggle-hint">字符 bigram 关键词召回，与向量检索 RRF 融合</span>
+        </div>
+        <div class="toggle-field">
+          <label for="retrieval-rerank">Reranker 重排序</label>
+          <ToggleSwitch
+            id="retrieval-rerank"
+            v-model="enableRerank"
+            input-id="retrieval-rerank"
+            :disabled="searching"
+          />
+          <span class="muted toggle-hint">bge-reranker-v2-m3 精排，对候选列表做交叉编码重排序</span>
         </div>
       </div>
     </div>
@@ -420,6 +489,39 @@ export default defineComponent({
 }
 .param-field :deep(.p-inputnumber-input) {
   width: 100%;
+}
+.param-hint {
+  font-size: 0.75rem;
+  color: #94a3b8;
+  line-height: 1.3;
+}
+.toggle-row {
+  display: flex;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  padding-top: 0.3rem;
+  border-top: 1px solid #e2e8f0;
+}
+.toggle-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  align-items: flex-start;
+}
+.toggle-field label {
+  font-size: 0.8125rem;
+  color: #475569;
+  font-weight: 500;
+}
+.toggle-hint {
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+.reranker-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
 }
 .retrieval-error {
   padding: 0.7rem 0.85rem;

@@ -135,12 +135,28 @@ function health(value: unknown): RetrievalHealth {
     value.device !== 'cpu' || (value.error !== undefined && value.error !== null && typeof value.error !== 'string')
   ) throw invalidResponse()
   const hasError = value.error !== undefined && value.error !== null
+  // 解析可选的 reranker 字段
+  let reranker: RetrievalHealth['reranker']
+  if (value.reranker !== undefined && value.reranker !== null && object(value.reranker)) {
+    const r = value.reranker
+    if (
+      ['unloaded', 'loading', 'ready', 'error'].includes(r.status as string) &&
+      typeof r.modelId === 'string'
+    ) {
+      reranker = {
+        status: r.status as RetrievalHealth['reranker'] extends undefined ? never : NonNullable<RetrievalHealth['reranker']>['status'],
+        modelId: r.modelId,
+        ...(r.error !== undefined && r.error !== null && typeof r.error === 'string' ? { error: r.error } : {}),
+      }
+    }
+  }
   return {
     status: value.status as RetrievalHealth['status'],
     modelId: value.modelId,
     dimension: value.dimension,
     device: value.device,
     ...(hasError ? { error: value.error as string } : {}),
+    ...(reranker !== undefined ? { reranker } : {}),
   }
 }
 
@@ -160,7 +176,16 @@ export async function searchVectors(input: SearchRequest, signal?: AbortSignal):
     query: input.query,
     topK: input.topK,
     minScore: input.minScore,
-    chunks: input.chunks.map(({ id, content }) => ({ id, content })),
+    chunks: input.chunks.map((c) => ({
+      id: c.id,
+      content: c.content,
+      ...(c.knowledgeBaseId !== undefined ? { knowledgeBaseId: c.knowledgeBaseId } : {}),
+      ...(c.documentType !== undefined ? { documentType: c.documentType } : {}),
+    })),
+    ...(input.enableBm25 !== undefined ? { enableBm25: input.enableBm25 } : {}),
+    ...(input.enableRerank !== undefined ? { enableRerank: input.enableRerank } : {}),
+    ...(input.knowledgeBaseIds !== undefined ? { knowledgeBaseIds: input.knowledgeBaseIds } : {}),
+    ...(input.documentTypes !== undefined ? { documentTypes: input.documentTypes } : {}),
   }
   const value = await request('search', JSON.stringify(snapshot), signal)
   if (
@@ -178,16 +203,33 @@ export async function searchVectors(input: SearchRequest, signal?: AbortSignal):
       !finite(hit.score) || hit.score < -1 || hit.score > 1 || hit.score < snapshot.minScore ||
       hit.score > previousScore || (hit.score === previousScore && order.get(hit.id)! < previousIndex)
     ) throw invalidResponse()
+    // 校验可选分数字段（存在时必须为 number）
+    if (hit.vectorScore !== undefined && hit.vectorScore !== null && !finite(hit.vectorScore)) throw invalidResponse()
+    if (hit.bm25Score !== undefined && hit.bm25Score !== null && !finite(hit.bm25Score)) throw invalidResponse()
+    if (hit.rerankScore !== undefined && hit.rerankScore !== null && !finite(hit.rerankScore)) throw invalidResponse()
     seen.add(hit.id)
     previousScore = hit.score
     previousIndex = order.get(hit.id)!
-    return { id: hit.id, score: hit.score }
+    return {
+      id: hit.id,
+      score: hit.score,
+      ...(hit.vectorScore !== undefined && hit.vectorScore !== null ? { vectorScore: hit.vectorScore } : {}),
+      ...(hit.bm25Score !== undefined && hit.bm25Score !== null ? { bm25Score: hit.bm25Score } : {}),
+      ...(hit.rerankScore !== undefined && hit.rerankScore !== null ? { rerankScore: hit.rerankScore } : {}),
+    }
   })
+  // 解析可选的 rerankerUsed
+  let rerankerUsed: boolean | undefined
+  if (value.rerankerUsed !== undefined && value.rerankerUsed !== null) {
+    if (typeof value.rerankerUsed !== 'boolean') throw invalidResponse()
+    rerankerUsed = value.rerankerUsed
+  }
   return {
     hits,
     modelId: value.modelId,
     dimension: value.dimension,
     elapsedMs: value.elapsedMs,
     totalChunks: snapshot.chunks.length,
+    ...(rerankerUsed !== undefined ? { rerankerUsed } : {}),
   }
 }

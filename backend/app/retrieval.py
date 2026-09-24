@@ -1,14 +1,19 @@
 """LRU 缓存与检索"""
 import hashlib
+import logging
 import time
 from collections import OrderedDict
-from typing import List, Dict, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 
 from . import config
+from .bm25 import BM25Scorer, tokenize_bigram
 from .embedding import embedding_service
+from .reranker import reranker_service
 from .schemas import SearchRequest, SearchHit, SearchResponseData
+
+logger = logging.getLogger(__name__)
 
 
 class LRUCache:
@@ -59,9 +64,10 @@ class RetrievalService:
 
         self._busy = True
         start_time = time.time()
+        reranker_used = False
 
         try:
-            hits = await self._do_search(request)
+            hits, reranker_used = await self._do_search(request)
             elapsed_ms = (time.time() - start_time) * 1000
 
             return SearchResponseData(
@@ -70,50 +76,163 @@ class RetrievalService:
                 dimension=config.DIMENSION,
                 elapsedMs=elapsed_ms,
                 totalChunks=len(request.chunks),
+                rerankerUsed=reranker_used,
             )
         finally:
             self._busy = False
 
-    async def _do_search(self, request: SearchRequest) -> List[SearchHit]:
-        """执行检索逻辑"""
+    async def _do_search(self, request: SearchRequest) -> Tuple[List[SearchHit], bool]:
+        """执行检索逻辑，返回 (hits, reranker_used)"""
         if not request.chunks:
-            return []
+            return [], False
 
-        # 编码查询
-        query_vecs = await self._encode_with_windows(request.query, is_query=True)
+        # 0. 过滤
+        chunks = self._apply_filters(request.chunks, request)
+        if not chunks:
+            return [], False
 
-        # 编码文档块
+        # 1. 向量检索（始终执行）
+        vector_hits = await self._vector_search(request.query, chunks)
+
+        # 2. BM25 检索（可选）
+        bm25_hits: List[Tuple[str, float]] = []
+        if request.enableBm25 and config.BM25_ENABLED:
+            bm25_hits = self._bm25_search(request.query, chunks)
+
+        # 3. RRF 融合
+        used_rrf = False
+        if bm25_hits:
+            fused = self._rrf_fusion(vector_hits, bm25_hits)
+            used_rrf = True
+        else:
+            fused = vector_hits
+
+        # 4. Rerank（可选）
+        reranker_used = False
+        if request.enableRerank and config.RERANKER_ENABLED:
+            try:
+                fused, reranker_used = await self._rerank(request.query, fused, chunks)
+            except Exception:
+                logger.warning("Rerank 失败，使用混合检索分数")
+
+        # 5. 过滤 + 排序 + topK
+        # RRF 融合后分数范围改变（~0.01），不再适用 minScore 阈值
+        if used_rrf:
+            filtered = fused  # RRF 已是排序，直接取 topK
+        else:
+            filtered = [(cid, score) for cid, score in fused if score >= request.minScore]
+        filtered.sort(key=lambda x: (-x[1], x[0]))
+        top_k = filtered[: request.topK]
+
+        # 构建分数查找表
+        vec_score_map = {cid: s for cid, s in vector_hits}
+        bm25_score_map = {cid: s for cid, s in bm25_hits} if bm25_hits else {}
+
+        hits = []
+        for cid, score in top_k:
+            hits.append(SearchHit(
+                id=cid,
+                score=float(score),
+                vectorScore=vec_score_map.get(cid),
+                bm25Score=bm25_score_map.get(cid) if bm25_score_map else None,
+                rerankScore=float(score) if reranker_used else None,
+            ))
+
+        return hits, reranker_used
+
+    async def _vector_search(
+        self, query: str, chunks: List
+    ) -> List[Tuple[str, float]]:
+        """纯向量检索（原有逻辑提取）"""
+        query_vecs = await self._encode_with_windows(query, is_query=True)
+
         chunk_scores = []
-        for idx, chunk in enumerate(request.chunks):
-            # 检查缓存
+        for idx, chunk in enumerate(chunks):
             cache_key = _content_hash(chunk.content)
             hit, cached_vecs = self._cache.get(cache_key)
 
             if hit:
                 chunk_vecs = cached_vecs
             else:
-                # 编码并缓存
                 chunk_vecs = await self._encode_with_windows(chunk.content, is_query=False)
                 self._cache.put(cache_key, chunk_vecs)
 
-            # 计算最大点积（所有窗口与所有查询窗口的最大点积）
             max_score = self._max_dot_product(chunk_vecs, query_vecs)
-            chunk_scores.append((idx, chunk.id, max_score))
+            chunk_scores.append((chunk.id, max_score))
 
-        # 过滤和排序
-        filtered = [
-            (idx, cid, score)
-            for idx, cid, score in chunk_scores
-            if score >= request.minScore
-        ]
+        # 按分数降序，同分按输入顺序
+        chunk_scores.sort(key=lambda x: -x[1])
+        return chunk_scores
 
-        # 降序排序，同分按输入顺序
-        filtered.sort(key=lambda x: (-x[2], x[0]))
+    def _apply_filters(self, chunks: List, request: SearchRequest) -> List:
+        """按知识库/文档类型过滤"""
+        filtered = chunks
+        if request.knowledgeBaseIds:
+            kb_set = set(request.knowledgeBaseIds)
+            filtered = [c for c in filtered if c.knowledgeBaseId in kb_set]
+        if request.documentTypes:
+            type_set = set(request.documentTypes)
+            filtered = [c for c in filtered if c.documentType in type_set]
+        return filtered
 
-        # 取 topK
-        top_k = filtered[: request.topK]
+    def _bm25_search(
+        self, query: str, chunks: List
+    ) -> List[Tuple[str, float]]:
+        """BM25 关键词检索"""
+        documents = [c.content for c in chunks]
+        scorer = BM25Scorer()
+        scorer.build_index(documents)
+        scores = scorer.score_batch(query, documents)
+        result = [(chunks[i].id, float(s)) for i, s in enumerate(scores) if s > 0]
+        result.sort(key=lambda x: -x[1])
+        return result
 
-        return [SearchHit(id=cid, score=float(score)) for _, cid, score in top_k]
+    def _rrf_fusion(
+        self,
+        vector_hits: List[Tuple[str, float]],
+        bm25_hits: List[Tuple[str, float]],
+    ) -> List[Tuple[str, float]]:
+        """Reciprocal Rank Fusion"""
+        k = config.RRF_K
+        scores: Dict[str, float] = {}
+        for rank, (cid, _score) in enumerate(vector_hits):
+            scores[cid] = scores.get(cid, 0.0) + config.VECTOR_WEIGHT / (k + rank + 1)
+        for rank, (cid, _score) in enumerate(bm25_hits):
+            scores[cid] = scores.get(cid, 0.0) + config.BM25_WEIGHT / (k + rank + 1)
+        fused = sorted(scores.items(), key=lambda x: -x[1])
+        return fused
+
+    async def _rerank(
+        self,
+        query: str,
+        fused: List[Tuple[str, float]],
+        chunks: List,
+    ) -> Tuple[List[Tuple[str, float]], bool]:
+        """Rerank 重排序，返回 (新融合列表, reranker_used)"""
+        # 限制送入 Reranker 的候选数，避免 CPU 爆满
+        max_candidates = min(config.RERANKER_TOP_N, len(fused))
+        fused = fused[:max_candidates]
+
+        chunk_map = {c.id: c.content for c in chunks}
+        ids = [cid for cid, _ in fused]
+        passages = [chunk_map[cid] for cid in ids if cid in chunk_map]
+
+        if not passages:
+            return fused, False
+
+        try:
+            # 使用配置的超时时间
+            ranked = await reranker_service.rerank(
+                query, passages, top_k=len(passages),
+                timeout=config.RERANKER_TIMEOUT,
+            )
+
+            # ranked: [(原始索引, 分数), ...]
+            reranked_ids = [(ids[orig_idx], score) for orig_idx, score in ranked]
+            return reranked_ids, True
+        except Exception as e:
+            logger.warning(f"Rerank 失败，使用混合检索分数：{e}")
+            return fused, False
 
     async def _encode_with_windows(self, text: str, is_query: bool) -> np.ndarray:
         """编码文本（支持长文本窗口切分）"""

@@ -18,6 +18,7 @@ from .schemas import (
 )
 from .embedding import embedding_service, ModelState
 from .retrieval import retrieval_service
+from .reranker import reranker_service, RerankerState
 
 # 配置日志
 logging.basicConfig(
@@ -89,7 +90,12 @@ async def check_body_size(request: Request, call_next: Callable):
 async def health():
     """健康检查"""
     health_data = embedding_service.get_health()
-    return HealthResponse(data=HealthData(**health_data))
+    response = HealthResponse(data=HealthData(**health_data))
+    result = response.model_dump()
+    # 追加 reranker 状态（可选字段）
+    reranker_health = reranker_service.get_health()
+    result["data"]["reranker"] = reranker_health
+    return result
 
 
 @app.post("/retrieval/load")
@@ -122,18 +128,29 @@ async def load_model(request: Request):
     state = embedding_service.state
     if state == ModelState.READY:
         health_data = embedding_service.get_health()
-        return HealthResponse(data=HealthData(**health_data))
+        resp = HealthResponse(data=HealthData(**health_data)).model_dump()
+        resp["data"]["reranker"] = reranker_service.get_health()
+        return resp
 
     if state == ModelState.LOADING:
         health_data = embedding_service.get_health()
-        return HealthResponse(data=HealthData(**health_data))
+        resp = HealthResponse(data=HealthData(**health_data)).model_dump()
+        resp["data"]["reranker"] = reranker_service.get_health()
+        return resp
 
     # unloaded 或 error，启动加载
     await embedding_service.load()
+
+    # 如果 Reranker 已启用，同时触发加载
+    if config.RERANKER_ENABLED and reranker_service.state == RerankerState.UNLOADED:
+        await reranker_service.load()
+
     health_data = embedding_service.get_health()
+    resp = HealthResponse(data=HealthData(**health_data)).model_dump()
+    resp["data"]["reranker"] = reranker_service.get_health()
     return JSONResponse(
         status_code=202,
-        content=HealthResponse(data=HealthData(**health_data)).model_dump(),
+        content=resp,
     )
 
 
@@ -239,6 +256,23 @@ async def search(request: Request):
     except Exception as e:
         logger.exception("检索失败")
         return error_response(500, "ENCODING_FAILED", f"检索失败: {e}")
+
+
+@app.get("/retrieval/reranker-health")
+async def reranker_health():
+    """Reranker 健康检查"""
+    return reranker_service.get_health()
+
+
+@app.post("/retrieval/reranker-load")
+async def reranker_load(request: Request):
+    """加载 Reranker 模型"""
+    if not check_local_access(request):
+        return error_response(403, "LOCAL_ACCESS_ONLY", "仅允许本地访问")
+
+    health = await reranker_service.load()
+    status_code = 200 if reranker_service.state == RerankerState.READY else 202
+    return JSONResponse(status_code=status_code, content=health)
 
 
 @app.exception_handler(Exception)

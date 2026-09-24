@@ -36,11 +36,18 @@ function isTextBased(name: string): boolean {
   return /\.(md|txt)$/i.test(name)
 }
 
+function inferDocumentType(name: string): string {
+  const ext = name.split('.').pop()?.toLowerCase() ?? ''
+  if (['md', 'txt', 'pdf', 'doc', 'docx'].includes(ext)) return ext
+  return 'txt'
+}
+
 interface EligibleChunk {
   id: string
   content: string
   documentId: string
   knowledgeBaseId: string
+  documentType: string
   documentName: string
   index: number
   section: string
@@ -65,6 +72,7 @@ function collectEligible(documents: RetrievalDocument[]): { chunks: EligibleChun
         content: chunk.content,
         documentId: doc.record.id,
         knowledgeBaseId: doc.record.knowledgeBaseId,
+        documentType: inferDocumentType(doc.record.name),
         documentName: doc.record.name,
         index: chunk.index,
         section: chunk.section,
@@ -181,7 +189,7 @@ export function createKnowledgeRetrieval(deps: Dependencies) {
     async search(
       selected: string[],
       query: string,
-      options: { topK: number; minScore: number },
+      options: { topK: number; minScore: number; enableBm25?: boolean; enableRerank?: boolean },
       signal?: AbortSignal,
     ): Promise<KnowledgeSearchResult> {
       if (import.meta.env.VITE_DATA_MODE === 'rest')
@@ -205,7 +213,14 @@ export function createKnowledgeRetrieval(deps: Dependencies) {
         }
       }
 
-      const request = { query, topK: options.topK, minScore: options.minScore, chunks }
+      const request = {
+        query,
+        topK: options.topK,
+        minScore: options.minScore,
+        enableBm25: options.enableBm25 ?? false,
+        enableRerank: options.enableRerank ?? false,
+        chunks,
+      }
       validateSearchRequest(request)
       const response = await searchVectors(request, signal)
 
@@ -228,7 +243,7 @@ export function createKnowledgeRetrieval(deps: Dependencies) {
     prepare(
       selected: string[],
       query: string,
-      options: { topK: number; minScore: number },
+      options: { topK: number; minScore: number; enableBm25?: boolean; enableRerank?: boolean },
       mode: RetrievalMode,
     ) {
       const data = deps.read(selected, true, mode)
@@ -262,7 +277,14 @@ export function createKnowledgeRetrieval(deps: Dependencies) {
               mode: 'local',
             }
           }
-          const request = { query, topK: options.topK, minScore: options.minScore, chunks }
+          const request = {
+            query,
+            topK: options.topK,
+            minScore: options.minScore,
+            enableBm25: options.enableBm25 ?? false,
+            enableRerank: options.enableRerank ?? false,
+            chunks,
+          }
           validateSearchRequest(request)
           const response = await searchVectors(request, runSignal)
           validate(runSignal)
